@@ -8,6 +8,8 @@ export interface Context {
   gh: Github;
   /** Gather read-only evidence (diffs, logs, dates) for each drift finding. */
   evidence?: boolean;
+  /** --unmerged-days: overrides the config's minimum branch age for the unmerged-branches finding. */
+  unmergedDays?: number;
 }
 
 export function hostOf(ctx: Context, name = "local"): HostConfig {

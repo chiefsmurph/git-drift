@@ -34,6 +34,8 @@ export interface GitTarget extends TargetBase {
    * behind, ahead/unmerged, or on another branch becomes a note. Right for laptops; default false (deployments).
    */
   onlyUnpushed?: boolean;
+  /** Flag origin branches that were pushed but never merged into the default branch. `false` turns it off. */
+  unmerged?: UnmergedConfig | false;
 }
 
 /** A plain directory deployed by copy/rsync: every file must match the repo at `ref`, byte for byte. */
@@ -71,6 +73,16 @@ export interface CommandTarget extends TargetBase {
   timeoutSec?: number;
 }
 
+/** Branches pushed to origin whose patches never reached the default branch (the "unmerged-branches" finding). */
+export interface UnmergedConfig {
+  /** Skip branches whose last commit is younger than this many days (work in progress). Default 7. */
+  minAgeDays?: number;
+  /** Bot branches to leave out of the finding (they are only counted in a note). Default ["dependabot/*", "renovate/*"]. */
+  ignoreBots?: string[];
+  /** Branch names or globs to accept as intentionally unmerged, e.g. "archive/*", "old-experiment". */
+  ignore?: string[];
+}
+
 export type Target = GitTarget | FilesTarget | StampTarget | CommandTarget;
 
 /** Look for git checkouts on a host that no `git` target covers. */
@@ -102,7 +114,7 @@ export interface GithubReposConfig {
 export interface Config {
   github?: { owner?: string; apiUrl?: string };
   hosts: Record<string, HostConfig>;
-  defaults?: { exclude?: string[]; ignore?: string[] };
+  defaults?: { exclude?: string[]; ignore?: string[]; unmerged?: UnmergedConfig | false };
   targets: Target[];
   discover?: DiscoverConfig[];
   githubRepos?: GithubReposConfig;
@@ -168,6 +180,15 @@ export function validate(raw: unknown): Config {
     if (!Array.isArray(d.roots) || d.roots.length === 0) errors.push(`discover[${i}]: "roots" must be a non-empty array`);
     if (d.maxDepth !== undefined && !(Number.isInteger(d.maxDepth) && d.maxDepth >= 1 && d.maxDepth <= 20)) errors.push(`discover[${i}]: "maxDepth" must be an integer 1-20`);
   }
+  const unmergedErr = (u: unknown, where: string) => {
+    if (u === undefined || u === false) return;
+    const x = u as UnmergedConfig;
+    if (typeof u !== "object" || u === null) return void errors.push(`${where}: "unmerged" must be an object or false`);
+    if (x.minAgeDays !== undefined && !(typeof x.minAgeDays === "number" && x.minAgeDays >= 0)) errors.push(`${where}: unmerged.minAgeDays must be a number >= 0`);
+    for (const k of ["ignoreBots", "ignore"] as const) if (x[k] !== undefined && !Array.isArray(x[k])) errors.push(`${where}: unmerged.${k} must be an array`);
+  };
+  unmergedErr(c.defaults?.unmerged, "defaults");
+  for (const [i, t] of (c.targets ?? []).entries()) if (t?.type === "git") unmergedErr(t.unmerged, `targets[${i}]`);
   if (c.githubRepos && !Array.isArray(c.githubRepos.repos)) errors.push("githubRepos.repos must be an array");
 
   if (errors.length) throw new ConfigError("invalid config:\n  - " + errors.join("\n  - "));
