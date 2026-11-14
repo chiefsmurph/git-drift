@@ -129,7 +129,7 @@ git-drift -q -e -f json | claude -p --tools "" "$(cat examples/ai-triage-prompt.
 (lines starting with `$ ` are commands) and, with `-e` / `--evidence`, read-only `evidence` (diffs, unpushed
 commit logs, dates; likely secrets redacted; contents of unexplained files are never read).
 
-Codes: `uncommitted`, `stash`, `unpushed-branches`, `not-on-github`, `worktree-uncommitted`, `behind`, `ahead`,
+Codes: `uncommitted`, `stash`, `unpushed-branches`, `not-on-github`, `worktree-uncommitted`, `behind`, `ahead`, `unmerged-branches`, `unmerged-bot-branches`,
 `diverged`, `wrong-branch`, `no-remote`, `files-differ`, `files-missing`, `files-extra`, `missing-path`,
 `not-git`, `stamp-unreadable`, `unlisted-checkouts`, `command-failed`, `check-error`.
 
@@ -177,7 +177,7 @@ Runs on macOS and Linux: the standalone binary needs nothing else, the npm packa
 
 | type | for | passes when |
 |---|---|---|
-| `git` | a git checkout on a server, or a repo on this machine (no `host`) | on `ref` at the same commit as GitHub, nothing uncommitted, no stashes, no worktree edits, no local branch with commits GitHub has never seen |
+| `git` | a git checkout on a server, or a repo on this machine (no `host`) | on `ref` at the same commit as GitHub, nothing uncommitted, no stashes, no worktree edits, no local branch with commits GitHub has never seen, no old branch on GitHub that never got merged |
 | `files` | a directory deployed by rsync / copy / CI | every file matches the repo at `ref` (optionally a `subdir`), no repo file is missing, no extra file the repo's `.gitignore` doesn't explain |
 | `stamp` | a build that records its commit (e.g. `build/version.json`) | the recorded SHA is `ref` |
 | `command` | anything else | exits 0, and the output matches `expect` (and not `fail`) |
@@ -190,6 +190,15 @@ Runs on macOS and Linux: the standalone binary needs nothing else, the npm packa
   "3 commits behind" is exactly what you want to know. Repos that `discover` finds on this machine get it by
   default (a pushed feature branch on your laptop is fine); repos it finds on an SSH host don't. Set it
   explicitly to override either way.
+- **Unmerged branches** (on `git` targets and everything `discover` finds): a branch that was pushed to `origin` but whose
+  patches never reached the default branch is drift once its last commit is older than 7 days. It is on GitHub, so
+  it isn't lost, but it isn't in the code that runs either; this is how a finished fix sits unmerged for weeks.
+  It compares patches (`git cherry`), so squash-merged and cherry-picked branches are not flagged, and it reads
+  the remote refs your last `git fetch` left behind: git-drift never fetches, so it works offline (fetch first
+  for fresh data). `dependabot/*` and `renovate/*` are left out but counted in a note. Configure it with
+  `"unmerged": { "minAgeDays": 7, "ignoreBots": ["dependabot/*", "renovate/*"], "ignore": ["archive/*", "old-experiment"] }`
+  on a `git` target or under `defaults` (`"unmerged": false` turns it off; `checkBranches: false` does too;
+  `githubRepos.ignoreBranches` is honored as well). `--unmerged-days <n>` overrides the age for one run.
 - **`githubRepos`**: open pull requests and branches not merged into the default branch. These are notes and never fail the run.
 
 Also: `ref` (a branch, tag or SHA; default = the repo's default branch) on `git`/`files`/`stamp`;
@@ -208,6 +217,7 @@ git-drift notify pingpigeon                          get the report by email (se
   -f text|markdown|html|json   stdout format          -o report.md   also write a report (repeatable)
   -q                           hide clean checks      --only name    only matching checks / host
   -e, --evidence               add diffs, unpushed commit logs and dates to each drift finding (for AI triage)
+  --unmerged-days n            only flag unmerged pushed branches older than n days (default 7)
   --state file / --no-state    where it remembers when each problem was first seen
   --notify / --notify-always   email the report when something drifted / after every run
 ```

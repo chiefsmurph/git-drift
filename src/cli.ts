@@ -33,6 +33,7 @@ Options:
   -q, --quiet              leave clean checks out of the report
   -e, --evidence           for each drift, also collect read-only evidence (diffs, commit logs, dates;
                            secrets redacted) into the json report, e.g. to hand to an AI agent
+      --unmerged-days <n>  ignore pushed-but-unmerged branches younger than <n> days (default 7; 0 = all)
       --concurrency <n>    checks to run at once (default 6)
       --state <file>       where to remember when each problem was first seen, so reports mark it
                            "new" or "since Oct 5 · day 3" (default ~/.local/state/git-drift/seen.json)
@@ -52,6 +53,7 @@ interface Args {
   quiet: boolean;
   evidence: boolean;
   concurrency: number;
+  unmergedDays?: number;
   /** null = --no-state */
   state?: string | null;
   init?: string;
@@ -99,6 +101,12 @@ function parseArgs(argv: string[]): Args {
       case "-e": case "--evidence": a.evidence = true; break;
       case "--state": a.state = value(i++, arg); break;
       case "--no-state": a.state = null; break;
+      case "--unmerged-days": {
+        const n = Number(value(i++, arg));
+        if (!Number.isFinite(n) || n < 0) throw new ConfigError("--unmerged-days must be a number >= 0");
+        a.unmergedDays = n;
+        break;
+      }
       case "--concurrency": a.concurrency = Math.max(1, Number(value(i++, arg)) || 6); break;
       case "-h": case "--help": console.log(USAGE); process.exit(0);
       case "-v": case "--version": {
@@ -181,7 +189,7 @@ async function main(): Promise<number> {
   const token = findToken(config.github?.apiUrl);
   if (!token) console.error("warning: no GitHub token (set GITHUB_TOKEN or run `gh auth login`); private repos will fail");
   const gh = new GithubApi(token, config.github?.apiUrl);
-  const tasks = buildTasks({ config, gh, evidence: args.evidence }, args.only);
+  const tasks = buildTasks({ config, gh, evidence: args.evidence, unmergedDays: args.unmergedDays }, args.only);
   if (!tasks.length) throw new ConfigError("no checks matched");
   const results = await runAll(tasks, args.concurrency, args.only);
   if (!results.length) throw new ConfigError("no checks matched");

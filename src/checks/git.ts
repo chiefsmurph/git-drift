@@ -3,9 +3,10 @@ import type { GitTarget } from "../config.js";
 import { GithubError } from "../github.js";
 import { runScript } from "../exec.js";
 import { capLines } from "../evidence.js";
-import { gitEvidenceScript, gitStateScript, parseGitState, probeLines, sections } from "../remote.js";
+import { gitEvidenceScript, gitStateScript, parseGitState, parseUnmerged, probeLines, sections, unmergedScript } from "../remote.js";
 import type { Finding } from "../types.js";
 import { capped, hostOf, isLocal, onHost, slug, type Context } from "./context.js";
+import { globMatch } from "./github-repos.js";
 import { relationFinding } from "./relation.js";
 
 export interface Outcome {
@@ -16,6 +17,58 @@ export interface Outcome {
 /** Quote a path for a command shown to the user, leaving plain paths (and ~/…) readable. */
 export function shownPath(p: string): string {
   return /^[\w~./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
+const DEFAULT_BOTS = ["dependabot/*", "renovate/*"];
+
+/**
+ * Branches pushed to origin whose patches never reached the default branch, judged from the refs this
+ * machine last fetched (no network). Old ones are drift (a pushed branch can still be forgotten work);
+ * bot branches are only counted.
+ */
+async function unmergedFindings(ctx: Context, t: GitTarget, defaultBranch: string, here: (cmd: string) => string, now = Date.now()): Promise<Finding[]> {
+  const cfg = t.unmerged ?? ctx.config.defaults?.unmerged;
+  if (cfg === false || t.unmerged === false || t.checkBranches === false) return [];
+  const minDays = ctx.unmergedDays ?? cfg?.minAgeDays ?? 7;
+  const bots = cfg?.ignoreBots ?? DEFAULT_BOTS;
+  const ignore = [...(cfg?.ignore ?? []), ...(ctx.config.githubRepos?.ignoreBranches ?? [])];
+  let found;
+  try {
+    found = parseUnmerged(probeLines(await runScript(hostOf(ctx, t.host), unmergedScript(t.path, defaultBranch)), `listing remote branches in ${t.path}`));
+  } catch {
+    return []; // an extra check never makes the whole check fail
+  }
+  const out: Finding[] = [];
+  const botBranches = found.branches.filter((b) => bots.some((g) => globMatch(g, b.name)));
+  const cutoff = now - minDays * 86_400_000;
+  const stale = found.branches
+    .filter((b) => !botBranches.includes(b) && !ignore.some((g) => globMatch(g, b.name)) && b.time * 1000 <= cutoff)
+    .sort((a, b) => a.time - b.time);
+  const base = found.base.replace(/^origin\//, "");
+  if (stale.length) {
+    const first = stale[0].name;
+    out.push({
+      severity: "drift",
+      code: "unmerged-branches",
+      message: `${stale.length} branch${stale.length === 1 ? " was" : "es were"} pushed to GitHub but never merged into ${base} (older than ${minDays} day${minDays === 1 ? "" : "s"})`,
+      items: capped(stale.map((b) => {
+        const days = Math.floor((now - b.time * 1000) / 86_400_000);
+        return `${b.name} — ${b.commits} commit${b.commits === 1 ? "" : "s"} not in ${base}, last commit ${new Date(b.time * 1000).toISOString().slice(0, 10)} (${days} days ago): ${b.subject}`;
+      })),
+      fix: [
+        `The work is on GitHub, but ${base} doesn't have it, so it isn't deployed or running. Look at what it adds (based on the last fetch; run \`git fetch\` first for fresh data):`,
+        here(`git log --oneline ${found.base}..origin/${first}`),
+        `Wanted: open a pull request and merge it into ${base}.`,
+        here(`gh pr create --head ${first} --base ${base}`),
+        `Not wanted: delete it on GitHub, or accept it with "unmerged": { "ignore": ["${first}"] } in the config.`,
+        here(`git push origin --delete ${first}`),
+      ],
+    });
+  }
+  if (botBranches.length) {
+    out.push({ severity: "info", code: "unmerged-bot-branches", message: `${botBranches.length} bot branch${botBranches.length === 1 ? "" : "es"} (${bots.join(", ")}) not merged into ${base}: not counted` });
+  }
+  return out;
 }
 
 export async function checkGit(ctx: Context, t: GitTarget): Promise<Outcome> {
@@ -150,6 +203,8 @@ export async function checkGit(ctx: Context, t: GitTarget): Promise<Outcome> {
       });
     }
   }
+
+  findings.push(...(await unmergedFindings(ctx, t, want.ref, here)));
 
   if (ctx.evidence && findings.some((f) => f.severity === "drift")) {
     const trees = dirtyTrees.slice(0, 3).map((w) => w.path);

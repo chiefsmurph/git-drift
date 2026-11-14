@@ -57,6 +57,54 @@ echo END
 `;
 }
 
+/**
+ * Remote branches (origin) whose patches are not in the default branch, from the refs fetched last time:
+ * never runs `git fetch`, so it works offline. `git cherry` compares patches, not commit ids, so squash-merged
+ * and cherry-picked work does not count. Prints `UM <unique>\t<unix time>\t<branch>\t<tip subject>` per branch.
+ */
+export function unmergedScript(path: string, fallbackBranch: string): string {
+  return `${GIT_FN}
+cd ${qpath(path)} 2>/dev/null || { echo "ERR missing"; exit 0; }
+base=$(G symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^refs/remotes/##')
+if [ -z "$base" ]; then
+  for b in ${q(fallbackBranch)} main master; do
+    if G rev-parse --verify -q "refs/remotes/origin/$b" >/dev/null 2>&1; then base="origin/$b"; break; fi
+  done
+fi
+if [ -z "$base" ]; then echo "UMNOBASE"; echo END; exit 0; fi
+echo "UMBASE $base"
+G for-each-ref --format='%(refname)' refs/remotes/origin 2>/dev/null | sed 's#^refs/remotes/##' | while IFS= read -r b; do
+  [ "$b" = "$base" ] && continue
+  case "$b" in origin|origin/HEAD) continue ;; esac
+  n=$(G cherry "$base" "refs/remotes/$b" 2>/dev/null | grep -c '^+')
+  [ "$n" -gt 0 ] || continue
+  printf 'UM %s\t%s\t%s\t%s\n' "$n" "$(G log -1 --format=%ct "refs/remotes/$b")" "\${b#origin/}" "$(G log -1 --format=%s "refs/remotes/$b" | tr '\t' ' ')"
+done
+echo END
+`;
+}
+
+export interface UnmergedBranch {
+  name: string;
+  commits: number;
+  /** unix seconds of the tip commit */
+  time: number;
+  subject: string;
+}
+
+export function parseUnmerged(lines: string[]): { base: string; branches: UnmergedBranch[] } {
+  let base = "";
+  const branches: UnmergedBranch[] = [];
+  for (const line of lines) {
+    if (line.startsWith("UMBASE ")) base = line.slice(7).trim();
+    else if (line.startsWith("UM ")) {
+      const [n, t, name, ...subject] = line.slice(3).split("\t");
+      if (name) branches.push({ name, commits: Number(n) || 0, time: Number(t) || 0, subject: subject.join(" ") });
+    }
+  }
+  return { base, branches };
+}
+
 export interface GitState {
   error?: "missing" | "notgit" | "nogit" | "ownership" | "status";
   head: string;
