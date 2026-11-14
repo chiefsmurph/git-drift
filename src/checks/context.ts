@@ -12,6 +12,8 @@ export interface Context {
   unmergedDays?: number;
   /** false (--no-cleanup) skips the stale-worktrees probe. */
   cleanup?: boolean;
+  /** --cleanup-min-age: hours of inactivity before a worktree is listed as cleanup (default 24; 0 = off). */
+  cleanupMinAge?: number;
 }
 
 export function hostOf(ctx: Context, name = "local"): HostConfig {

@@ -76,12 +76,13 @@ AI coding agents create worktrees and rarely clean up. git-drift lists the finis
 
 ```
 Cleanup (safe to remove — merged, clean):
-  ~/code/golden-lion-wev2   feat/wordedge-external-v2 (merged)             2.7 GB
-  ~/code/gl-night           fix/dawn-night (all commits upstream)          2.7 GB
-  2 stale worktrees, 5.4 GB → git worktree remove <path>
+  ~/code/myapp-feat-login   feat/login (merged)                       2.7 GB
+  ~/code/api-fix-auth       fix/auth (all commits upstream)           1.1 GB
+  ~/code/myapp/.claude/worktrees/agent-3f9a   worktree-agent-3f9a (merged)   310 MB
+  3 stale worktrees, 4.1 GB → git worktree remove <path>
 ```
 
-A linked worktree is listed only when nothing can be lost: not locked, nothing uncommitted (untracked files
+A linked worktree is listed only when nothing can be lost: not locked, untouched for 24 hours (so an agent that is about to reuse it isn't caught: last activity is the newest of its own index file, its HEAD file and its HEAD commit's committer date; change it with `--cleanup-min-age <hours>`, `0` = off), nothing uncommitted (untracked files
 count), and its HEAD is already in the default branch on GitHub, or every commit on its branch is already
 upstream (`git cherry`, so squash and cherry-pick merges count). A worktree with unmerged commits or edits is
 never listed here (the unpushed, unmerged and `worktree-uncommitted` findings cover those). One whose

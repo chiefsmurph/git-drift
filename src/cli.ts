@@ -35,6 +35,7 @@ Options:
                            secrets redacted) into the json report, e.g. to hand to an AI agent
       --unmerged-days <n>  ignore pushed-but-unmerged branches younger than <n> days (default 7; 0 = all)
       --no-cleanup         hide the Cleanup section (finished worktrees that are safe to remove)
+      --cleanup-min-age <h>  list a worktree as cleanup only after <h> hours without activity (default 24; 0 = off)
       --concurrency <n>    checks to run at once (default 6)
       --state <file>       where to remember when each problem was first seen, so reports mark it
                            "new" or "since Oct 5 · day 3" (default ~/.local/state/git-drift/seen.json)
@@ -56,6 +57,7 @@ interface Args {
   concurrency: number;
   unmergedDays?: number;
   cleanup: boolean;
+  cleanupMinAge?: number;
   /** null = --no-state */
   state?: string | null;
   init?: string;
@@ -107,6 +109,12 @@ function parseArgs(argv: string[]): Args {
         const n = Number(value(i++, arg));
         if (!Number.isFinite(n) || n < 0) throw new ConfigError("--unmerged-days must be a number >= 0");
         a.unmergedDays = n;
+        break;
+      }
+      case "--cleanup-min-age": {
+        const n = Number(value(i++, arg));
+        if (!Number.isFinite(n) || n < 0) throw new ConfigError("--cleanup-min-age must be a number >= 0");
+        a.cleanupMinAge = n;
         break;
       }
       case "--no-cleanup": a.cleanup = false; break;
@@ -192,7 +200,7 @@ async function main(): Promise<number> {
   const token = findToken(config.github?.apiUrl);
   if (!token) console.error("warning: no GitHub token (set GITHUB_TOKEN or run `gh auth login`); private repos will fail");
   const gh = new GithubApi(token, config.github?.apiUrl);
-  const tasks = buildTasks({ config, gh, evidence: args.evidence, unmergedDays: args.unmergedDays, cleanup: args.cleanup }, args.only);
+  const tasks = buildTasks({ config, gh, evidence: args.evidence, unmergedDays: args.unmergedDays, cleanup: args.cleanup, cleanupMinAge: args.cleanupMinAge }, args.only);
   if (!tasks.length) throw new ConfigError("no checks matched");
   const results = await runAll(tasks, args.concurrency, args.only);
   if (!results.length) throw new ConfigError("no checks matched");

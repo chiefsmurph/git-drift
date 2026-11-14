@@ -354,15 +354,27 @@ export function sections(lines: string[]): Map<string, string[]> {
 
 /**
  * Linked worktrees that are safe to remove, from the refs fetched last time (no network): not locked, clean
- * (untracked files count, ignored ones don't), and either their HEAD is in the default branch or (on a branch)
+ * (untracked files count, ignored ones don't), not touched within `minAgeSec` (newest of its index and HEAD file mtimes
+ * and its HEAD commit's committer date), and either their HEAD is in the default branch or (on a branch)
  * every commit is already upstream per `git cherry`. Missing directories are reported to prune. Size is `du -sk`
  * under a timeout. Prints `CL <merged|upstream|prune>\t<KB or ?>\t<branch or ->\t<sha>\t<path>`.
  */
-export function cleanupScript(path: string, fallbackBranch: string): string {
+export function cleanupScript(path: string, fallbackBranch: string, minAgeSec = 0): string {
   return `${GIT_FN}
 cd ${qpath(path)} 2>/dev/null || { echo "ERR missing"; exit 0; }
 ${baseSnippet(fallbackBranch)}
 top=$(G rev-parse --show-toplevel 2>/dev/null)
+now=$(date +%s)
+mt() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+# Last activity: newest of the worktree's own index and HEAD files and its HEAD commit's committer date.
+recent() {
+  gd=$(G -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 0
+  newest=$(G -C "$1" log -1 --format=%ct HEAD 2>/dev/null)
+  for f in "$gd/index" "$gd/HEAD"; do
+    m=$(mt "$f"); [ -n "$m" ] && [ "\${m:-0}" -gt "\${newest:-0}" ] && newest=$m
+  done
+  [ -n "$newest" ] && [ $((now - newest)) -lt ${Math.max(0, Math.floor(minAgeSec))} ]
+}
 size() {
   if command -v timeout >/dev/null 2>&1; then r=$(timeout 20 du -sk "$1" 2>/dev/null)
   elif command -v gtimeout >/dev/null 2>&1; then r=$(gtimeout 20 du -sk "$1" 2>/dev/null)
@@ -379,6 +391,7 @@ eval_wt() {
   [ -n "$sha" ] || return 0
   st=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$w" status --porcelain 2>/dev/null) || return 0
   [ -z "$st" ] || return 0
+  if [ ${Math.max(0, Math.floor(minAgeSec))} -gt 0 ] && recent "$w"; then return 0; fi
   why=
   if G merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then why=merged
   elif [ -n "$br" ]; then

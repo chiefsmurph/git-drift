@@ -5,7 +5,7 @@ Every release is a patch version.
 ## 0.4.3
 
 - New **Cleanup** section: linked worktrees that are finished and safe to remove. A worktree is listed when it
-  is not locked, has nothing uncommitted (untracked files count), and its HEAD is already in the default branch
+  is not locked, has had no activity for 24 hours (newest of its index file, HEAD file and HEAD commit date; `--cleanup-min-age <hours>`, 0 = off), has nothing uncommitted (untracked files count), and its HEAD is already in the default branch
   on GitHub, or (on a branch) every commit is already upstream per `git cherry` (squash and cherry-pick merges).
   Detached worktrees count only when their HEAD is in the default branch. Each entry shows repo, path, branch
   (or detached sha), why it is safe and its disk size (`du -sk`, 20 s limit, `?` on failure), plus a total.

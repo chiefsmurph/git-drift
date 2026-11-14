@@ -76,7 +76,7 @@ async function unmergedFindings(ctx: Context, t: GitTarget, defaultBranch: strin
 /** Linked worktrees that are finished (merged or all commits upstream, clean, unlocked) or whose directory is gone. */
 async function cleanupItems(ctx: Context, t: GitTarget, defaultBranch: string): Promise<CleanupItem[]> {
   try {
-    const rows = parseCleanup(probeLines(await runScript(hostOf(ctx, t.host), cleanupScript(t.path, defaultBranch)), `listing stale worktrees in ${t.path}`));
+    const rows = parseCleanup(probeLines(await runScript(hostOf(ctx, t.host), cleanupScript(t.path, defaultBranch, (ctx.cleanupMinAge ?? 24) * 3600)), `listing stale worktrees in ${t.path}`));
     return rows.map((r) => {
       const missing = r.kind === "prune";
       return {
