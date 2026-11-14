@@ -18,6 +18,29 @@ export interface Finding {
   firstSeen?: string;
 }
 
+/**
+ * Something that is safe to delete, not a problem: reported in its own low-key Cleanup section. It never
+ * changes a check's status, the exit code, the headline or --notify.
+ */
+export interface CleanupItem {
+  /** "stale-worktree": merged/upstream and clean. "missing-worktree": directory gone, `git worktree prune`. */
+  kind: "stale-worktree" | "missing-worktree";
+  /** the repo's path */
+  repo: string;
+  host: string;
+  /** the worktree path */
+  path: string;
+  /** branch name; empty when HEAD is detached */
+  branch: string;
+  sha: string;
+  /** "merged", "all commits upstream" or "directory missing" */
+  reason: string;
+  /** disk used (KB, `du -sk`); null when unknown */
+  sizeKb: number | null;
+  /** the command that removes it (git-drift never runs it) */
+  command: string;
+}
+
 export interface CheckResult {
   name: string;
   type: string;
@@ -26,6 +49,8 @@ export interface CheckResult {
   /** One line describing the outcome. */
   summary: string;
   findings: Finding[];
+  /** Safe-to-remove leftovers (never drift). Absent when there are none. */
+  cleanup?: CleanupItem[];
   ms: number;
 }
 

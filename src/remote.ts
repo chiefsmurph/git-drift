@@ -62,16 +62,19 @@ echo END
  * never runs `git fetch`, so it works offline. `git cherry` compares patches, not commit ids, so squash-merged
  * and cherry-picked work does not count. Prints `UM <unique>\t<unix time>\t<branch>\t<tip subject>` per branch.
  */
-export function unmergedScript(path: string, fallbackBranch: string): string {
-  return `${GIT_FN}
-cd ${qpath(path)} 2>/dev/null || { echo "ERR missing"; exit 0; }
-base=$(G symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^refs/remotes/##')
+/** Sets $base to the remote-tracking default branch (origin/HEAD, else the fallback, main, master) or prints UMNOBASE and ends. */
+const baseSnippet = (fallbackBranch: string) => `base=$(G symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^refs/remotes/##')
 if [ -z "$base" ]; then
   for b in ${q(fallbackBranch)} main master; do
     if G rev-parse --verify -q "refs/remotes/origin/$b" >/dev/null 2>&1; then base="origin/$b"; break; fi
   done
 fi
-if [ -z "$base" ]; then echo "UMNOBASE"; echo END; exit 0; fi
+if [ -z "$base" ]; then echo "UMNOBASE"; echo END; exit 0; fi`;
+
+export function unmergedScript(path: string, fallbackBranch: string): string {
+  return `${GIT_FN}
+cd ${qpath(path)} 2>/dev/null || { echo "ERR missing"; exit 0; }
+${baseSnippet(fallbackBranch)}
 echo "UMBASE $base"
 G for-each-ref --format='%(refname)' refs/remotes/origin 2>/dev/null | sed 's#^refs/remotes/##' | while IFS= read -r b; do
   [ "$b" = "$base" ] && continue
@@ -347,4 +350,89 @@ export function sections(lines: string[]): Map<string, string[]> {
     else if (cur && l !== "") m.get(cur)!.push(l);
   }
   return m;
+}
+
+/**
+ * Linked worktrees that are safe to remove, from the refs fetched last time (no network): not locked, clean
+ * (untracked files count, ignored ones don't), not touched within `minAgeSec` (newest of its index and HEAD file mtimes
+ * and its HEAD commit's committer date), and either their HEAD is in the default branch or (on a branch)
+ * every commit is already upstream per `git cherry`. Missing directories are reported to prune. Size is `du -sk`
+ * under a timeout. Prints `CL <merged|upstream|prune>\t<KB or ?>\t<branch or ->\t<sha>\t<path>`.
+ */
+export function cleanupScript(path: string, fallbackBranch: string, minAgeSec = 0): string {
+  return `${GIT_FN}
+cd ${qpath(path)} 2>/dev/null || { echo "ERR missing"; exit 0; }
+${baseSnippet(fallbackBranch)}
+top=$(G rev-parse --show-toplevel 2>/dev/null)
+now=$(date +%s)
+mt() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+# Last activity: newest of the worktree's own index and HEAD files and its HEAD commit's committer date.
+recent() {
+  gd=$(G -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 0
+  newest=$(G -C "$1" log -1 --format=%ct HEAD 2>/dev/null)
+  for f in "$gd/index" "$gd/HEAD"; do
+    m=$(mt "$f"); [ -n "$m" ] && [ "\${m:-0}" -gt "\${newest:-0}" ] && newest=$m
+  done
+  [ -n "$newest" ] && [ $((now - newest)) -lt ${Math.max(0, Math.floor(minAgeSec))} ]
+}
+size() {
+  if command -v timeout >/dev/null 2>&1; then r=$(timeout 20 du -sk "$1" 2>/dev/null)
+  elif command -v gtimeout >/dev/null 2>&1; then r=$(gtimeout 20 du -sk "$1" 2>/dev/null)
+  elif command -v perl >/dev/null 2>&1; then r=$(perl -e 'alarm 20; exec @ARGV' du -sk "$1" 2>/dev/null)
+  else r=$(du -sk "$1" 2>/dev/null); fi
+  r=\${r%%[!0-9]*}; echo "\${r:-?}"
+}
+eval_wt() {
+  [ -n "$w" ] && [ "$w" != "$top" ] || return 0
+  case "$w" in */.git/*) return 0 ;; esac
+  [ -n "$locked" ] && return 0
+  if [ -n "$prunable" ] || [ ! -d "$w" ]; then printf 'CL prune\t?\t%s\t%s\t%s\n' "\${br:--}" "$sha" "$w"; return 0; fi
+  [ -n "$bare" ] && return 0
+  [ -n "$sha" ] || return 0
+  st=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$w" status --porcelain 2>/dev/null) || return 0
+  [ -z "$st" ] || return 0
+  if [ ${Math.max(0, Math.floor(minAgeSec))} -gt 0 ] && recent "$w"; then return 0; fi
+  why=
+  if G merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then why=merged
+  elif [ -n "$br" ]; then
+    ch=$(G cherry "$base" "$sha" 2>/dev/null) || return 0
+    printf '%s\n' "$ch" | grep -q '^+' || why=upstream
+  fi
+  [ -n "$why" ] || return 0
+  printf 'CL %s\t%s\t%s\t%s\t%s\n' "$why" "$(size "$w")" "\${br:--}" "$sha" "$w"
+}
+w=; sha=; br=; locked=; prunable=; bare=
+{ G worktree list --porcelain 2>/dev/null; echo; } | while IFS= read -r line; do
+  case "$line" in
+    "worktree "*) w=\${line#worktree } ;;
+    "HEAD "*) sha=\${line#HEAD } ;;
+    "branch "*) br=\${line#branch refs/heads/} ;;
+    locked*) locked=1 ;;
+    prunable*) prunable=1 ;;
+    bare) bare=1 ;;
+    "") eval_wt; w=; sha=; br=; locked=; prunable=; bare= ;;
+  esac
+done
+echo END
+`;
+}
+
+export interface CleanupRow {
+  kind: "merged" | "upstream" | "prune";
+  sizeKb: number | null;
+  branch: string;
+  sha: string;
+  path: string;
+}
+
+export function parseCleanup(lines: string[]): CleanupRow[] {
+  const rows: CleanupRow[] = [];
+  for (const line of lines) {
+    if (!line.startsWith("CL ")) continue;
+    const [kind, size, branch, sha, ...path] = line.slice(3).split("\t");
+    if (path.length && ["merged", "upstream", "prune"].includes(kind)) {
+      rows.push({ kind: kind as CleanupRow["kind"], sizeKb: /^\d+$/.test(size) ? Number(size) : null, branch: branch === "-" ? "" : branch, sha, path: path.join("\t") });
+    }
+  }
+  return rows;
 }

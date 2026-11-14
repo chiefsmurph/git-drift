@@ -3,8 +3,8 @@ import type { GitTarget } from "../config.js";
 import { GithubError } from "../github.js";
 import { runScript } from "../exec.js";
 import { capLines } from "../evidence.js";
-import { gitEvidenceScript, gitStateScript, parseGitState, parseUnmerged, probeLines, sections, unmergedScript } from "../remote.js";
-import type { Finding } from "../types.js";
+import { cleanupScript, gitEvidenceScript, parseCleanup, gitStateScript, parseGitState, parseUnmerged, probeLines, sections, unmergedScript } from "../remote.js";
+import type { CleanupItem, Finding } from "../types.js";
 import { capped, hostOf, isLocal, onHost, slug, type Context } from "./context.js";
 import { globMatch } from "./github-repos.js";
 import { relationFinding } from "./relation.js";
@@ -12,6 +12,8 @@ import { relationFinding } from "./relation.js";
 export interface Outcome {
   summary: string;
   findings: Finding[];
+  /** safe-to-remove leftovers; never affects status */
+  cleanup?: CleanupItem[];
 }
 
 /** Quote a path for a command shown to the user, leaving plain paths (and ~/…) readable. */
@@ -69,6 +71,29 @@ async function unmergedFindings(ctx: Context, t: GitTarget, defaultBranch: strin
     out.push({ severity: "info", code: "unmerged-bot-branches", message: `${botBranches.length} bot branch${botBranches.length === 1 ? "" : "es"} (${bots.join(", ")}) not merged into ${base}: not counted` });
   }
   return out;
+}
+
+/** Linked worktrees that are finished (merged or all commits upstream, clean, unlocked) or whose directory is gone. */
+async function cleanupItems(ctx: Context, t: GitTarget, defaultBranch: string): Promise<CleanupItem[]> {
+  try {
+    const rows = parseCleanup(probeLines(await runScript(hostOf(ctx, t.host), cleanupScript(t.path, defaultBranch, (ctx.cleanupMinAge ?? 24) * 3600)), `listing stale worktrees in ${t.path}`));
+    return rows.map((r) => {
+      const missing = r.kind === "prune";
+      return {
+        kind: missing ? "missing-worktree" : "stale-worktree",
+        repo: t.path,
+        host: t.host ?? "local",
+        path: r.path,
+        branch: r.branch,
+        sha: r.sha,
+        reason: missing ? "directory missing" : r.kind === "merged" ? "merged" : "all commits upstream",
+        sizeKb: r.sizeKb,
+        command: onHost(ctx, t.host, `cd ${shownPath(t.path)} && ${missing ? "git worktree prune" : `git worktree remove ${shownPath(r.path)}`}`),
+      };
+    });
+  } catch {
+    return []; // an extra check never makes the whole check fail
+  }
 }
 
 export async function checkGit(ctx: Context, t: GitTarget): Promise<Outcome> {
@@ -223,6 +248,8 @@ export async function checkGit(ctx: Context, t: GitTarget): Promise<Outcome> {
     }
   }
 
+  const cleanup = ctx.cleanup !== false && s.worktrees.length ? await cleanupItems(ctx, t, want.ref) : [];
+
   const where = `${s.branch || "detached"} @ ${short(s.head)}`;
   const drift = findings.filter((f) => f.severity === "drift");
   return {
@@ -230,5 +257,6 @@ export async function checkGit(ctx: Context, t: GitTarget): Promise<Outcome> {
       ? `${where} — ${drift[0].message}${drift.length > 1 ? ` (+${drift.length - 1} more)` : ""}`
       : `${where} matches ${want.ref} on GitHub, clean`,
     findings,
+    ...(cleanup.length ? { cleanup } : {}),
   };
 }

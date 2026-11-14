@@ -58,7 +58,7 @@ async function runTask(task: Task, spawned: Task[]): Promise<CheckResult> {
   try {
     const outcome = await task.run();
     spawned.push(...((outcome as DiscoverOutcome).spawn ?? []));
-    return { ...base, status: statusOf(outcome.findings), summary: outcome.summary, findings: outcome.findings, ms: Date.now() - started };
+    return { ...base, status: statusOf(outcome.findings), summary: outcome.summary, findings: outcome.findings, ...((outcome as Outcome).cleanup?.length ? { cleanup: (outcome as Outcome).cleanup } : {}), ms: Date.now() - started };
   } catch (e) {
     const message = (e as Error).message || String(e);
     const fix = ["The check couldn't run, so this machine is unverified (not necessarily broken). Usually SSH access, permissions, a GitHub token, or a renamed path. Retry just this check:", `$ git-drift --only ${JSON.stringify(task.name)}`];
