@@ -34,6 +34,7 @@ Options:
   -e, --evidence           for each drift, also collect read-only evidence (diffs, commit logs, dates;
                            secrets redacted) into the json report, e.g. to hand to an AI agent
       --unmerged-days <n>  ignore pushed-but-unmerged branches younger than <n> days (default 7; 0 = all)
+      --no-cleanup         hide the Cleanup section (finished worktrees that are safe to remove)
       --concurrency <n>    checks to run at once (default 6)
       --state <file>       where to remember when each problem was first seen, so reports mark it
                            "new" or "since Oct 5 · day 3" (default ~/.local/state/git-drift/seen.json)
@@ -54,6 +55,7 @@ interface Args {
   evidence: boolean;
   concurrency: number;
   unmergedDays?: number;
+  cleanup: boolean;
   /** null = --no-state */
   state?: string | null;
   init?: string;
@@ -65,7 +67,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { format: "text", outs: [], only: [], quiet: false, evidence: false, concurrency: 6 };
+  const a: Args = { format: "text", outs: [], only: [], quiet: false, evidence: false, concurrency: 6, cleanup: true };
   const value = (i: number, flag: string) => {
     const v = argv[i + 1];
     if (v === undefined || v.startsWith("-")) throw new ConfigError(`${flag} needs a value`);
@@ -107,6 +109,7 @@ function parseArgs(argv: string[]): Args {
         a.unmergedDays = n;
         break;
       }
+      case "--no-cleanup": a.cleanup = false; break;
       case "--concurrency": a.concurrency = Math.max(1, Number(value(i++, arg)) || 6); break;
       case "-h": case "--help": console.log(USAGE); process.exit(0);
       case "-v": case "--version": {
@@ -189,7 +192,7 @@ async function main(): Promise<number> {
   const token = findToken(config.github?.apiUrl);
   if (!token) console.error("warning: no GitHub token (set GITHUB_TOKEN or run `gh auth login`); private repos will fail");
   const gh = new GithubApi(token, config.github?.apiUrl);
-  const tasks = buildTasks({ config, gh, evidence: args.evidence, unmergedDays: args.unmergedDays }, args.only);
+  const tasks = buildTasks({ config, gh, evidence: args.evidence, unmergedDays: args.unmergedDays, cleanup: args.cleanup }, args.only);
   if (!tasks.length) throw new ConfigError("no checks matched");
   const results = await runAll(tasks, args.concurrency, args.only);
   if (!results.length) throw new ConfigError("no checks matched");

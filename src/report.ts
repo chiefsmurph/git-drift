@@ -1,5 +1,5 @@
 import { ageLabel, isNew, newChecks } from "./history.js";
-import type { CheckResult, Finding, Status } from "./types.js";
+import type { CheckResult, CleanupItem, Finding, Status } from "./types.js";
 
 export type Format = "text" | "markdown" | "html" | "json";
 
@@ -46,7 +46,44 @@ function fixParts(fix: string[]): { cmd: boolean; text: string }[] {
   return fix.map((l) => (l.startsWith("$ ") ? { cmd: true, text: l.slice(2) } : { cmd: false, text: l }));
 }
 
-function text(results: CheckResult[], quiet: boolean, when: Date): string {
+/** Safe-to-remove leftovers across all checks (never counted as problems). */
+export const cleanupOf = (results: CheckResult[]): CleanupItem[] => results.flatMap((r) => r.cleanup ?? []);
+
+export function sizeLabel(kb: number | null): string {
+  if (kb === null) return "?";
+  if (kb >= 1024 * 1024) return `${(kb / 1024 / 1024).toFixed(1)} GB`;
+  if (kb >= 1024) return `${Math.round(kb / 1024)} MB`;
+  return `${kb} KB`;
+}
+
+function cleanupLines(results: CheckResult[], home = process.env.HOME ?? ""): string[] {
+  const items = cleanupOf(results);
+  const stale = items.filter((i) => i.kind === "stale-worktree");
+  const missing = items.filter((i) => i.kind === "missing-worktree");
+  const where = (i: CleanupItem) => {
+    const p = i.host === "local" && home && i.path.startsWith(home + "/") ? "~" + i.path.slice(home.length) : i.path;
+    return i.host === "local" ? p : `${i.host}:${p}`;
+  };
+  const what = (i: CleanupItem) => `${i.branch || `detached ${i.sha.slice(0, 7)}`} (${i.reason})`;
+  const out: string[] = [];
+  if (stale.length) {
+    const w = Math.max(...stale.map((i) => where(i).length));
+    const b = Math.max(...stale.map((i) => what(i).length));
+    out.push("Cleanup (safe to remove — merged, clean):");
+    for (const i of stale) out.push(`  ${where(i).padEnd(w)}   ${what(i).padEnd(b)}   ${sizeLabel(i.sizeKb)}`);
+    const total = stale.reduce((n, i) => n + (i.sizeKb ?? 0), 0);
+    out.push(`  ${stale.length} stale worktree${stale.length === 1 ? "" : "s"}${total ? `, ${sizeLabel(total)}` : ""} → git worktree remove <path>`);
+  }
+  if (missing.length) {
+    if (out.length) out.push("");
+    out.push("Cleanup (worktree directory is gone):");
+    for (const i of missing) out.push(`  ${where(i)}${i.branch ? `   ${i.branch}` : ""}`);
+    out.push(`  ${missing.length} missing worktree${missing.length === 1 ? "" : "s"} → git worktree prune (run in the repo)`);
+  }
+  return out;
+}
+
+function text(results: CheckResult[], quiet: boolean, when: Date, cleanup: boolean): string {
   const lines = [`git-drift — ${headline(results, when)}  (${when.toISOString().slice(0, 16).replace("T", " ")} UTC)`, ""];
   for (const r of ordered(results, quiet, when)) {
     lines.push(`${ICON[r.status]} ${r.name} [${r.host}] ${r.summary}`);
@@ -61,10 +98,12 @@ function text(results: CheckResult[], quiet: boolean, when: Date): string {
       }
     }
   }
+  const cl = cleanup ? cleanupLines(results) : [];
+  if (cl.length) lines.push("", ...cl);
   return lines.join("\n") + "\n";
 }
 
-function markdown(results: CheckResult[], quiet: boolean, when: Date): string {
+function markdown(results: CheckResult[], quiet: boolean, when: Date, cleanup: boolean): string {
   const out = [
     `## git-drift: ${headline(results, when)}`,
     "",
@@ -108,12 +147,14 @@ function markdown(results: CheckResult[], quiet: boolean, when: Date): string {
       out.push(`| ${r.name} | ${r.host} | ${(r.summary + (notes && !r.summary.includes(notes) ? ` (${notes})` : "")).replace(/\|/g, "\\|")} |`);
     }
   }
+  const cl = cleanup ? cleanupLines(results) : [];
+  if (cl.length) out.push("", "### Cleanup", "", "```", ...cl, "```");
   return out.join("\n") + "\n";
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-function html(results: CheckResult[], quiet: boolean, when: Date): string {
+function html(results: CheckResult[], quiet: boolean, when: Date, cleanup: boolean): string {
   const color: Record<Status, string> = { ok: "#1a7f37", drift: "#b35900", error: "#cf222e" };
   const rows = ordered(results, quiet, when)
     .map((r) => {
@@ -134,18 +175,22 @@ function html(results: CheckResult[], quiet: boolean, when: Date): string {
       return `<tr><td style="padding:6px;vertical-align:top;color:${color[r.status]};font-weight:600">${ICON[r.status]}</td><td style="padding:6px;vertical-align:top"><b>${esc(r.name)}</b> <span style="color:#666">${esc(r.host)}</span><div>${esc(r.summary)}</div>${details}</td></tr>`;
     })
     .join("");
-  return `<div style="font-family:-apple-system,Segoe UI,sans-serif;font-size:14px"><h2 style="margin:0 0 4px">git-drift: ${esc(headline(results, when))}</h2><p style="color:#666;margin:0 0 12px">${when.toISOString().slice(0, 16).replace("T", " ")} UTC · ✗ needs action (each one says how to fix it) · ! couldn't check · notes never fail the run</p><table style="border-collapse:collapse">${rows}</table></div>\n`;
+  return `<div style="font-family:-apple-system,Segoe UI,sans-serif;font-size:14px"><h2 style="margin:0 0 4px">git-drift: ${esc(headline(results, when))}</h2><p style="color:#666;margin:0 0 12px">${when.toISOString().slice(0, 16).replace("T", " ")} UTC · ✗ needs action (each one says how to fix it) · ! couldn't check · notes never fail the run</p><table style="border-collapse:collapse">${rows}</table>${cleanup && cleanupOf(results).length ? `<pre style="margin:12px 0 0;font-size:12px;color:#444;background:#f6f8fa;padding:8px;white-space:pre-wrap">${esc(cleanupLines(results).join("\n"))}</pre>` : ""}</div>\n`;
 }
 
-export function render(results: CheckResult[], format: Format, quiet = false, when = new Date()): string {
+/** `cleanup: false` leaves the Cleanup section out (the email report does). */
+export function render(results: CheckResult[], format: Format, quiet = false, when = new Date(), cleanup = true): string {
   switch (format) {
     case "json": {
       const summary = tracked(results) ? { ...counts(results), new: newChecks(results, when) } : counts(results);
-      return JSON.stringify({ generatedAt: when.toISOString(), summary, results }, null, 2) + "\n";
+      // `cleanup` (flat list across checks) is separate from drift: it never counts in `summary` or the exit code.
+      const items = cleanup ? cleanupOf(results) : [];
+      const shown = cleanup ? results : results.map(({ cleanup: _c, ...r }) => r);
+      return JSON.stringify({ generatedAt: when.toISOString(), summary, ...(items.length ? { cleanup: items } : {}), results: shown }, null, 2) + "\n";
     }
-    case "markdown": return markdown(results, quiet, when);
-    case "html": return html(results, quiet, when);
-    default: return text(results, quiet, when);
+    case "markdown": return markdown(results, quiet, when, cleanup);
+    case "html": return html(results, quiet, when, cleanup);
+    default: return text(results, quiet, when, cleanup);
   }
 }
 

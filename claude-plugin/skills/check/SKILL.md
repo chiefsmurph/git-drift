@@ -46,9 +46,12 @@ The JSON has `summary` and `results[]`. Each result has `name`, `host`, `status`
 start with `$ ` are commands), with `-e`, `evidence` (diffs, commit logs, dates; secrets redacted), and
 `firstSeen` (when git-drift first reported it; `summary.new` counts results new in this run). Lead with new
 problems; one that has sat for days is either forgotten or deliberate in-flight work, so ask before acting on it.
+A top-level `cleanup` array (and `cleanup` on a result) lists finished linked worktrees: `kind`
+(`stale-worktree` | `missing-worktree`), `repo`, `host`, `path`, `branch`, `reason`, `sizeKb`, `command`. These
+are not drift: they never change `summary`, the exit code or emails. Pass `--no-cleanup` to leave them out.
 Exit code 0 = clean, 1 = drift, 2 = a check couldn't run.
 
-If everything is clean, say so in one line and stop.
+If everything is clean, say so in one line and stop (then mention any `cleanup` entries, see step 3b).
 
 ## 2. Explain and recommend
 
@@ -77,6 +80,18 @@ Errors (`status: error`) mean that machine couldn't be checked: report them sepa
 - Servers may be production. When unsure, preserve the server's version in git first; that loses nothing.
 - If another tool or session may own a change (an agent worktree, a branch being worked on right now),
   say so and ask before touching it.
+
+## 3b. Cleanup: stale worktrees (optional, only with approval)
+
+If the JSON has `cleanup` entries, mention them after the drift work, briefly: how many and how much disk
+(sum `sizeKb`). They are clean, with all their commits already in the default branch, so nothing is lost,
+but they are still deletions: list them (path, branch, reason, size) and ask before removing any.
+- `stale-worktree`: after a yes, run `git worktree remove <path>` from the repo (the entry's `command`).
+  Never `--force`: if git refuses, the worktree changed since the scan; report it and stop. Do not delete
+  the branch unless the user asks for that separately.
+- `missing-worktree`: after a yes, `git worktree prune` in that repo (it only forgets directories already gone).
+- If another session or agent may be using a worktree right now, say so and let the user pick.
+- Servers: use the entry's `command` as given (it already includes the ssh), with the same approval.
 
 ## 4. Verify
 

@@ -97,7 +97,7 @@ export function fitEmail(text: string, html: string | undefined, budget = BODY_B
 }
 
 export async function sendReport(login: PigeonLogin, results: CheckResult[], quiet: boolean, when: Date): Promise<void> {
-  const msg = fitEmail(render(results, "text", quiet, when), render(results, "html", quiet, when));
+  const msg = fitEmail(render(results, "text", quiet, when, false), render(results, "html", quiet, when, false));
   await pigeon.email(login, { subject: `git-drift: ${headline(results, when)}`, ...msg });
 }
 

@@ -70,6 +70,26 @@ No config. For each repo it finds, it reads the GitHub remote and flags:
 | uncommitted changes in other worktrees | pushed but not merged |
 | a repo with **no remote at all** | a remote that isn't GitHub (not checked) |
 
+## Stale worktrees
+
+AI coding agents create worktrees and rarely clean up. git-drift lists the finished ones and how much disk they take:
+
+```
+Cleanup (safe to remove — merged, clean):
+  ~/code/golden-lion-wev2   feat/wordedge-external-v2 (merged)             2.7 GB
+  ~/code/gl-night           fix/dawn-night (all commits upstream)          2.7 GB
+  2 stale worktrees, 5.4 GB → git worktree remove <path>
+```
+
+A linked worktree is listed only when nothing can be lost: not locked, nothing uncommitted (untracked files
+count), and its HEAD is already in the default branch on GitHub, or every commit on its branch is already
+upstream (`git cherry`, so squash and cherry-pick merges count). A worktree with unmerged commits or edits is
+never listed here (the unpushed, unmerged and `worktree-uncommitted` findings cover those). One whose
+directory is gone is listed with `git worktree prune`. It is not drift: no effect on the exit code, the
+headline or `--notify` emails. `-f json` has it as a separate `cleanup` array; `--no-cleanup` hides it.
+git-drift only prints the command and never removes anything. It reads the refs you last fetched, so run
+`git fetch` first for fresh data.
+
 ## Servers
 
 The same scan works over SSH. Nothing is installed on the server:
@@ -129,7 +149,7 @@ git-drift -q -e -f json | claude -p --tools "" "$(cat examples/ai-triage-prompt.
 (lines starting with `$ ` are commands) and, with `-e` / `--evidence`, read-only `evidence` (diffs, unpushed
 commit logs, dates; likely secrets redacted; contents of unexplained files are never read).
 
-Codes: `uncommitted`, `stash`, `unpushed-branches`, `not-on-github`, `worktree-uncommitted`, `behind`, `ahead`, `unmerged-branches`, `unmerged-bot-branches`,
+Codes: `uncommitted`, `stash`, `unpushed-branches`, `not-on-github`, `worktree-uncommitted`, `behind`, `ahead`, `unmerged-branches`, `unmerged-bot-branches` (Cleanup entries have `kind`: `stale-worktree` / `missing-worktree`),
 `diverged`, `wrong-branch`, `no-remote`, `files-differ`, `files-missing`, `files-extra`, `missing-path`,
 `not-git`, `stamp-unreadable`, `unlisted-checkouts`, `command-failed`, `check-error`.
 
@@ -249,7 +269,7 @@ with whatever you already use.
 
 ## Safety
 
-Every probe only reads. They run `git rev-parse` / `status` / `stash list` / `worktree list` /
+Every probe only reads. They run `git rev-parse` / `status` / `stash list` / `worktree list` / `cherry` / `merge-base` / `du -sk` /
 `for-each-ref` / `config --get`, `find`, `git hash-object` (or python3 `hashlib`) and `cat` on stamp files,
 with `GIT_OPTIONAL_LOCKS=0` and `core.fsmonitor=false` so git neither rewrites the index nor runs a repo's
 monitor hook. They create one temp directory and remove it. `command` checks run whatever you write. Everything
